@@ -175,7 +175,7 @@ class Experiment:
 
         def tx_real(farr):
             """ farr: float array, [-1, 1] """
-            return np.round(32767 * farr).astype(np.uint16)
+            return np.round(32767 * farr).astype(np.int16).view(np.uint16)
 
         def tx_complex(times, farr, tolerance=2e-6):
             """times: float time array, farr: complex float array, [-1-1j, 1+1j]
