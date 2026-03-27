@@ -24,7 +24,7 @@ class ModelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # TODO make this check for a file first
-        subprocess.call(["make", "-j4", "-s", "-C", os.path.join(marga_sim_path, "build")])
+        subprocess.call(["cmake", "--build", os.path.join(marga_sim_path, "build"), "-j4"])
         subprocess.call(["fallocate", "-l", "516KiB", "/tmp/marcos_server_mem"])
         subprocess.call(["killall", "marga_sim"], stderr=subprocess.DEVNULL) # in case other instances were started earlier
 
@@ -35,29 +35,27 @@ class ModelTest(unittest.TestCase):
         if marga_sim_fst_dump:
             self.p = subprocess.Popen([os.path.join(marga_sim_path, "build", "marga_sim"), "both", marga_sim_csv, marga_sim_fst],
                                       stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.STDOUT)
+                                      stderr=subprocess.PIPE)
         else:
             self.p = subprocess.Popen([os.path.join(marga_sim_path, "build", "marga_sim"), "csv", marga_sim_csv],
                                       stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.STDOUT)
+                                      stderr=subprocess.PIPE)
 
+        # Wait for the server to print its "Listening" line on stderr
+        for line in self.p.stderr:
+            if b"Listening" in line:
+                break
+        else:
+            raise RuntimeError("marga_sim exited before printing 'Listening'")
 
         # open socket
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        for attempt in range(50):
-            try:
-                self.s.connect((ip_address, port))
-                break
-            except ConnectionRefusedError:
-                time.sleep(0.05)
-        else:
-            self.s.connect((ip_address, port))  # final attempt, let it raise
+        self.s.connect((ip_address, port))
         self.packet_idx = 0
 
     def tearDown(self):
-        # self.p.terminate() # if not already terminated
-        # self.p.kill() # if not already terminated
         self.s.close()
+        self.p.stderr.close()
 
         if marga_sim_fst_dump:
             # open GTKWave
