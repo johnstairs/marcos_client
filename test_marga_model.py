@@ -34,11 +34,11 @@ class ModelTest(unittest.TestCase):
         # start simulation
         if marga_sim_fst_dump:
             self.p = subprocess.Popen([os.path.join(marga_sim_path, "build", "marga_sim"), "both", marga_sim_csv, marga_sim_fst],
-                                      stdout=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE)
         else:
             self.p = subprocess.Popen([os.path.join(marga_sim_path, "build", "marga_sim"), "csv", marga_sim_csv],
-                                      stdout=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE)
 
         # Wait for the server to print its "Listening" line on stderr
@@ -50,9 +50,11 @@ class ModelTest(unittest.TestCase):
         else:
             self.p.wait()
             stderr_output = b"".join(stderr_lines).decode(errors="replace")
+            stdout_output = self.p.stdout.read().decode(errors="replace")
             raise RuntimeError(
                 f"marga_sim exited prematurely with code {self.p.returncode}.\n"
-                f"stderr:\n{stderr_output}"
+                f"stderr:\n{stderr_output}\n"
+                f"stdout:\n{stdout_output}"
             )
 
         # open socket
@@ -62,6 +64,7 @@ class ModelTest(unittest.TestCase):
 
     def tearDown(self):
         self.s.close()
+        self.p.stdout.close()
         self.p.stderr.close()
 
         if marga_sim_fst_dump:
