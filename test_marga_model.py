@@ -42,11 +42,18 @@ class ModelTest(unittest.TestCase):
                                       stderr=subprocess.PIPE)
 
         # Wait for the server to print its "Listening" line on stderr
+        stderr_lines = []
         for line in self.p.stderr:
+            stderr_lines.append(line)
             if b"Listening" in line:
                 break
         else:
-            raise RuntimeError("marga_sim exited before printing 'Listening'")
+            self.p.wait()
+            stderr_output = b"".join(stderr_lines).decode(errors="replace")
+            raise RuntimeError(
+                f"marga_sim exited prematurely with code {self.p.returncode}.\n"
+                f"stderr:\n{stderr_output}"
+            )
 
         # open socket
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
