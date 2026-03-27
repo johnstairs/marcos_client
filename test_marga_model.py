@@ -43,10 +43,15 @@ class ModelTest(unittest.TestCase):
 
 
         # open socket
-        time.sleep(0.05) # give marga_sim time to start up
-
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.s.connect((ip_address, port)) # only connect to local simulator
+        for attempt in range(50):
+            try:
+                self.s.connect((ip_address, port))
+                break
+            except ConnectionRefusedError:
+                time.sleep(0.05)
+        else:
+            self.s.connect((ip_address, port))  # final attempt, let it raise
         self.packet_idx = 0
 
     def tearDown(self):
