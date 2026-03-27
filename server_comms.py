@@ -74,7 +74,7 @@ def receive_response(socket):
     while True:
         buf = socket.recv(65536)
         if not buf:
-            raise ConnectionError("server closed connection before sending a reply")
+            raise ConnectionError("server closed connection before sending the final reply")
         unpacker.feed(buf)
         for msg in unpacker:
             yield msg
