@@ -323,7 +323,8 @@ class ServerTest(unittest.TestCase):
         raw_data = bytearray(mar_mem_bytes + 1)
         for m in range(mar_mem_bytes):
             raw_data[m] = m & 0xff
-        result, status = ops.mar_mem(bytes(raw_data), self.s)
+        with self.assertWarns(RuntimeWarning):
+            result, status = ops.mar_mem(bytes(raw_data), self.s)
         self.assertEqual(result, -1)
         self.assertEqual(status,
                          {'errors': ['too much mar mem data: {:d} bytes > {:d} -- streaming not yet implemented'.format(mar_mem_bytes + 1, mar_mem_bytes)] })
