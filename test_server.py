@@ -13,6 +13,7 @@ st = pdb.set_trace
 
 from local_config import ip_address, port, fpga_clk_freq_MHz, grad_board
 from server_comms import *
+import server_ops as ops
 
 class ServerTest(unittest.TestCase):
     # @classmethod
@@ -50,7 +51,7 @@ class ServerTest(unittest.TestCase):
                                'not all client commands were understood']}
 
         if full_test:
-            versions = [ (1,0,1), (1,0,5), (1,3,100), (1,3,255), (2,5,7), (255,255,255) ]
+            versions = [ (1,0,1), (1,0,6), (1,3,100), (1,3,255), (2,5,7), (255,255,255) ]
             expected_outcomes = [diff_info, diff_equal, diff_warning, diff_warning, diff_error, diff_error]
         else:
             versions = [ (1,0,1) ]
@@ -61,7 +62,7 @@ class ServerTest(unittest.TestCase):
             # send an unknown command to make sure system handles it gracefully
             packet = construct_packet({'asdfasdf':1}, self.packet_idx, version=v)
             reply = send_packet(packet, self.s)
-            expected_reply = [reply_pkt, 1, 0, version_full, {'UNKNOWN1': -1}, ee(v)]
+            expected_reply = (reply_pkt, 1, 0, version_full, {'UNKNOWN1': -1}, ee(v))
             if debug_replies:
                 print("Reply         : ", reply)
                 print("Expected reply: ", expected_reply)
@@ -74,24 +75,16 @@ class ServerTest(unittest.TestCase):
 
     def test_idle(self):
         """ Make sure the server state is (or becomes) idle, all the RX and TX buffers are empty, etc."""
-        real = send_packet(construct_packet({'are_you_real':0}, self.packet_idx), self.s)[4]['are_you_real']
+        real, _ = ops.are_you_real(self.s)
         if real == "hardware" or real == "simulation":
             buf_empties = 0xffffff
         elif real == "software":
             buf_empties = 0
 
-        packet = construct_packet({'regstatus': 0})
-
         def check_status():
             """Check status of the firmware, returning True if idle,
             and always returning the last-read ADC value"""
-            reply = send_packet(packet, self.s)
-            registers = reply[4]['regstatus']
-
-            # registers
-            exec_reg = registers[0]
-            status_reg = registers[1]
-            status_latch_reg = registers[2]
+            regs, _ = ops.regstatus(self.s)
 
             # status fields
             fhdo_busy = 0x20000
@@ -103,12 +96,12 @@ class ServerTest(unittest.TestCase):
             ocra1_err = 0x2
             ocra1_data_lost = 0x1
 
-            if (status_latch_reg & fhdo_err) or (status_latch_reg & ocra1_err) or (status_latch_reg & ocra1_data_lost):
+            if (regs.status_latch & fhdo_err) or (regs.status_latch & ocra1_err) or (regs.status_latch & ocra1_data_lost):
                 warnings.warn("Gradient error occurred during test_idle! Might have been caused by another of the tests.")
 
-            adc_value = status_reg & fhdo_adc
+            adc_value = regs.status & fhdo_adc
             idle = True
-            if (status_reg & fhdo_busy) or (status_reg & ocra1_busy):
+            if (regs.status & fhdo_busy) or (regs.status & ocra1_busy):
                 idle = False
 
             return idle, adc_value
@@ -118,54 +111,50 @@ class ServerTest(unittest.TestCase):
             if idle:
                 break
 
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full, {'regstatus': [0, adc_value, 0, 0, 0, buf_empties, 0]}, {}])
+        regs, status = ops.regstatus(self.s)
+        self.assertEqual(regs, ops.RegStatus(0, adc_value, 0, 0, 0, buf_empties, 0))
+        self.assertEqual(status, {})
 
     def test_bad_packet(self):
         packet = construct_packet([1,2,3])
         reply = send_packet(packet, self.s)
         self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
+                         (reply_pkt, 1, 0, version_full,
                           {},
-                          {'errors': ['no commands present or incorrectly formatted request']}])
+                          {'errors': ['no commands present or incorrectly formatted request']}))
 
     def test_bus(self):
         print_speeds = False
-        real = send_packet(construct_packet({'are_you_real':0}, self.packet_idx), self.s)[4]['are_you_real']
+        real, _ = ops.are_you_real(self.s)
         if real == "hardware":
-            deltas = (0.2, 2, 2)
-            times = (1.5, 131.0, 158.5) # numerical operation, bus read, bus write on hardware
+            deltas = (2, 2)
+            times = (131.0, 158.5) # bus read, bus write on hardware
             loops = 1000000
         elif real == "simulation":
-            deltas = (0.1, 5000, 3500)
-            times = (0.05, 10430, 5000)
+            deltas = (5000, 3500)
+            times = (10430, 5000)
             loops = 1000
         elif real == "software":
-            deltas = (3, 5, 5)
-            times = (5, 7, 7)
+            deltas = (5, 5)
+            times = (7, 7)
             loops = 10000000
 
-        packet = construct_packet({'test_bus':loops}, self.packet_idx)
-        reply = send_packet(packet, self.s)
-        null_t, read_t, write_t = reply[4]['test_bus']
+        timings, _ = ops.test_bus(loops, self.s)
 
         loops_norm = loops/1e6
         if print_speeds:
-            print(f"{real} data: null_t: {null_t/loops:.2f}, read_t: {read_t/loops:.2f}, write_t: {write_t/loops:.2f} us / cycle")
+            print(f"{real} data: null_t: {timings.null_us/loops:.2f}, read_t: {timings.read_us/loops:.2f}, write_t: {timings.write_us/loops:.2f} us / cycle")
         if real == "hardware":
-            self.assertAlmostEqual(null_t/1e3, times[0] * loops_norm, delta = deltas[0] * loops_norm) # 1 flop takes ~1.5 ns on average
-            self.assertAlmostEqual(read_t/1e3, times[1] * loops_norm, delta = deltas[1] * loops_norm) # 1 read takes ~141.9 ns on average
-            self.assertAlmostEqual(write_t/1e3, times[2] * loops_norm, delta = deltas[2] * loops_norm) # 1 write takes ~157.9 ns on average
+            self.assertAlmostEqual(timings.read_us/1e3, times[0] * loops_norm, delta = deltas[0] * loops_norm) # 1 read takes ~141.9 ns on average
+            self.assertAlmostEqual(timings.write_us/1e3, times[1] * loops_norm, delta = deltas[1] * loops_norm) # 1 write takes ~157.9 ns on average
         elif real == "simulation":
             # Might not be true if you're on a slow computer, but should be fine for most post-2015 PCs
-            self.assertLess(null_t/loops, 1.0)
-            self.assertLess(read_t/loops, 100.0)
-            self.assertLess(write_t/loops, 100.0)
+            self.assertLess(timings.read_us/loops, 100.0)
+            self.assertLess(timings.write_us/loops, 100.0)
 
     @unittest.skip("marga devel")
     def test_net(self):
-        real = send_packet(construct_packet({'are_you_real':0}, self.packet_idx), self.s)[4]['are_you_real']
+        real, _ = ops.are_you_real(self.s)
         if real == "hardware":
             loops = [10, 1000, 100000]
             times = (1.5, 131.0, 158.5) # upper-bound times for network transfers
@@ -175,21 +164,22 @@ class ServerTest(unittest.TestCase):
         elif real == "software":
             loops = [10, 1000, 100000]
             times = (1.5, 131.0, 158.5) # upper-bound times for network transfers
-        packet = construct_packet({'test_net':10}, self.packet_idx)
+        result, _ = ops.test_net(10, self.s)
         # VN: continue here
 
     def test_fpga_clk(self):
-        packet = construct_packet({'fpga_clk': [0xdf0d, 0x03f03f30, 0x00100700]})
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply, [reply_pkt, 1, 0, version_full, {'fpga_clk': 0}, {}])
+        result, status = ops.fpga_clk((0xdf0d, 0x03f03f30, 0x00100700), self.s)
+        self.assertEqual(result, 0)
+        self.assertEqual(status, {})
 
     def test_fpga_clk_partial(self):
+        # Send only 2 words instead of 3 — must use raw API since ops.fpga_clk enforces a 3-tuple
         packet = construct_packet({'fpga_clk': [0xdf0d,  0x03f03f30]})
         reply = send_packet(packet, self.s)
         self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
+                         (reply_pkt, 1, 0, version_full,
                           {'fpga_clk': -1},
-                          {'errors': ["you only provided some FPGA clock control words; check you're providing all 3"]}]
+                          {'errors': ["you only provided some FPGA clock control words; check you're providing all 3"]})
         )
 
     @unittest.skip("marga devel")
@@ -207,13 +197,13 @@ class ServerTest(unittest.TestCase):
         reply = send_packet(packet, self.s)
 
         self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
+                         (reply_pkt, 1, 0, version_full,
                           {'lo_freq': 0, 'tx_div': 0, 'rx_div': 0,
                            'tx_size': 0, 'raw_tx_data': 0, 'grad_div': 0, 'grad_ser': 0,
                            'grad_mem': 0, 'acq_rlim': 0},
                           {'infos': [
                               'tx data bytes copied: 65536',
-                              'gradient mem data bytes copied: 32768']}]
+                              'gradient mem data bytes copied: 32768']})
         )
 
     @unittest.skip("marga devel")
@@ -241,7 +231,7 @@ class ServerTest(unittest.TestCase):
         reply = send_packet(packet, self.s)
 
         self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
+                         (reply_pkt, 1, 0, version_full,
                           {'lo_freq': 0, 'tx_div': -1, 'rx_div': -1, 'tx_size': -1, 'raw_tx_data': -1, 'grad_div': -1, 'grad_ser': -1, 'grad_mem': -1, 'acq_rlim': -1},
                           {'errors': ['TX divider outside the range [1, 10000]; check your settings',
                                       'RX divider outside the range [25, 8192]; check your settings',
@@ -251,8 +241,8 @@ class ServerTest(unittest.TestCase):
                                       'serialiser enables outside the range [0, 0xf], check your settings',
                                       'too much grad mem data: 32772 bytes > 32768',
                                       'acquisition retry limit outside the range [1000, 10,000,000]; check your settings'
-                                      ]}
-                          ])
+                                      ]})
+                          )
 
     @unittest.skipUnless(grad_board == "gpa-fhdo", "requires GPA-FHDO board")
     def test_grad_adc(self):
@@ -260,7 +250,7 @@ class ServerTest(unittest.TestCase):
         # initialise SPI
         spi_div = 40
         upd = False # update on MSB writes
-        send_packet(construct_packet( {'direct': 0x00000000 | (2 << 0) | (spi_div << 2) | (0 << 8) | (upd << 9)} ), self.s)
+        ops.direct(0x00000000 | (2 << 0) | (spi_div << 2) | (0 << 8) | (upd << 9), self.s)
 
         # ADC defaults, same as in grad_board.GPAFHDO.init_hw()
         init_words = [
@@ -271,7 +261,7 @@ class ServerTest(unittest.TestCase):
             0x00088000, 0x00098000, 0x000a8000, 0x000b8000 # set each DAC channel to output 0
         ]
 
-        real = send_packet(construct_packet({'are_you_real':0}, self.packet_idx), self.s)[4]['are_you_real']
+        real, _ = ops.are_you_real(self.s)
         if real in ['simulation', 'software']:
             expected = [ 0 ] * ( len(init_words) - 1 )
         else:
@@ -281,13 +271,13 @@ class ServerTest(unittest.TestCase):
 
         for iw in init_words:
             # direct commands to grad board; send MSBs then LSBs
-            send_packet(construct_packet( {'direct': 0x02000000 | (iw >> 16)}), self.s)
-            send_packet(construct_packet( {'direct': 0x01000000 | (iw & 0xffff)}), self.s)
+            ops.direct(0x02000000 | (iw >> 16), self.s)
+            ops.direct(0x01000000 | (iw & 0xffff), self.s)
 
             # read ADC each time
 
             # status reg = 5, ADC word is lower 16 bits
-            adc_read = send_packet(construct_packet({'regrd': 5}), self.s)[4]['regrd']
+            adc_read, _ = ops.regrd(5, self.s)
             if print_adc_reads and adc_read != 0:
                 print("ADC read: ", adc_read)
             time.sleep(0.01)
@@ -300,28 +290,21 @@ class ServerTest(unittest.TestCase):
     def test_leds(self):
         # This test is mainly for the simulator, but will alter hardware LEDs too
         for k in range(256):
-            packet = construct_packet({'direct': 0x0f000000 + int((k & 0xff) << 8)})
-            reply = send_packet(packet, self.s)
-            self.assertEqual(reply,
-                             [reply_pkt, 1, 0, version_full,
-                              {'direct': 0}, {}])
+            result, status = ops.direct(0x0f000000 + int((k & 0xff) << 8), self.s)
+            self.assertEqual(result, 0)
+            self.assertEqual(status, {})
 
-        packet = construct_packet({'direct': 0x0f00a500}) # leds: a5
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
-                          {'direct': 0}, {}])
+        result, status = ops.direct(0x0f00a500, self.s) # leds: a5
+        self.assertEqual(result, 0)
+        self.assertEqual(status, {})
 
-        packet = construct_packet({'direct': 0x0f002400}) # leds: 24
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
-                          {'direct': 0}, {}])
+        result, status = ops.direct(0x0f002400, self.s) # leds: 24
+        self.assertEqual(result, 0)
+        self.assertEqual(status, {})
 
         # kill some time for the LEDs to change in simulation
-        packet = construct_packet({'regstatus': 0})
         for k in range(2):
-            reply = send_packet(packet, self.s)
+            ops.regstatus(self.s)
 
     def test_mar_mem(self):
         mar_mem_bytes = 4 * 65536 # full memory
@@ -331,25 +314,19 @@ class ServerTest(unittest.TestCase):
         raw_data = bytearray(mar_mem_bytes)
         for m in range(mar_mem_bytes):
             raw_data[m] = m & 0xff
-        packet = construct_packet({'mar_mem' : raw_data})
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
-                          {'mar_mem': 0},
-                          {'infos': ['mar mem data bytes copied: {:d}'.format(mar_mem_bytes)] }
-                          ])
+        result, status = ops.mar_mem(bytes(raw_data), self.s)
+        self.assertEqual(result, 0)
+        self.assertEqual(status,
+                         {'infos': ['mar mem data bytes copied: {:d}'.format(mar_mem_bytes)] })
 
         # a bit too much data
         raw_data = bytearray(mar_mem_bytes + 1)
         for m in range(mar_mem_bytes):
             raw_data[m] = m & 0xff
-        packet = construct_packet({'mar_mem' : raw_data})
-        reply = send_packet(packet, self.s)
-        self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full,
-                          {'mar_mem': -1},
-                          {'errors': ['too much mar mem data: {:d} bytes > {:d} -- streaming not yet implemented'.format(mar_mem_bytes + 1, mar_mem_bytes)] }
-                          ])
+        result, status = ops.mar_mem(bytes(raw_data), self.s)
+        self.assertEqual(result, -1)
+        self.assertEqual(status,
+                         {'errors': ['too much mar mem data: {:d} bytes > {:d} -- streaming not yet implemented'.format(mar_mem_bytes + 1, mar_mem_bytes)] })
 
     @unittest.skip("marga devel")
     def test_acquire_simple(self):
@@ -360,7 +337,7 @@ class ServerTest(unittest.TestCase):
         acquired_data_raw = reply[4]['acq']
         data = np.frombuffer(acquired_data_raw, np.complex64)
 
-        self.assertEqual(reply[:4], [reply_pkt, 1, 0, version_full])
+        self.assertEqual(reply[:4], (reply_pkt, 1, 0, version_full))
         self.assertEqual(len(acquired_data_raw), samples*8)
         self.assertIs(type(data), np.ndarray)
         self.assertEqual(data.size, samples)
@@ -382,10 +359,9 @@ class ServerTest(unittest.TestCase):
 
     @unittest.skip("comment this line out to shut down the server after testing")
     def test_exit(self): # last in alphabetical order
-        packet = construct_packet( {}, 0, command=close_server_pkt)
-        reply = send_packet(packet, self.s)
+        reply = ops.close_server(self.s)
         self.assertEqual(reply,
-                         [reply_pkt, 1, 0, version_full, {}, {'infos': ['Shutting down server.']}])
+                         (reply_pkt, 1, 0, version_full, {}, {'infos': ['Shutting down server.']}))
 
 def throughput_test(s):
     packet_idx = 0
