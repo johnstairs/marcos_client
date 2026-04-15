@@ -338,6 +338,11 @@ def cl2bin(changelist, changelist_grad,
     bdata = []
     addr = 0
     states = initial_bufs
+    # Clear GRAD_CTRL (buf 0) first to ensure fhdo_en=0 and ocra1_en=0 while
+    # GRAD_MSB/GRAD_LSB are being written. A previous sequence run may have left
+    # these bits set, which would trigger a spurious SPI transfer when the MSB
+    # buffer is strobed during the reversed initial_bufs sequence below.
+    bdata.append(instb(GRAD_CTRL, 0, 0))
     # reversed order, so that grad board is enabled last of all (to avoid spurious initial transfer)
     for k, ib in enumerate(reversed(initial_bufs)):
         bdata.append(instb(MARGA_BUFS-1-k, k, ib))

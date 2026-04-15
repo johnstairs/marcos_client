@@ -201,7 +201,7 @@ class GPAFHDO:
         self.bin_config = {
             'initial_bufs': np.array([
                 # see marga.sv, gradient control lines (lines 186-190, 05.02.2021)
-                # strobe for both MSB and LSB, reset_n = 1, spi div = 10, grad board select (1 = ocra1, 2 = gpa-fhdo)
+                # strobe for both LSB and MSB, reset_n = 1, spi div as given, grad board select (2 = gpa-fhdo)
                 (1 << 9) | (1 << 8) | (self.spi_div << 2) | 2,
                 0, 0,
                 0, 0,
