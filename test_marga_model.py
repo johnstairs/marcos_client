@@ -281,9 +281,12 @@ class ModelTest(unittest.TestCase):
         # Second run: genuinely too-fast gradient updates must still raise fhdo_err.
         # Use sc.command directly to avoid compare_csv's 1-second proc.wait limit.
         source_csv = os.path.join("csvs", "test_fhd_too_fast.csv")
-        lc = mc.csv2bin(source_csv, quick_start=False,
-                        initial_bufs=fhd_config['initial_bufs'],
-                        latencies=fhd_config['latencies'])
+        with self.assertWarns(mc.MarGradWarning) as cmg:
+            lc = mc.csv2bin(source_csv, quick_start=False,
+                            initial_bufs=fhd_config['initial_bufs'],
+                            latencies=fhd_config['latencies'])
+        self.assertEqual(str(cmg.warning),
+                         "Gradient updates are too frequent for selected SPI divider. Missed samples are likely!")
         data = np.array(lc, dtype=np.uint32)
         with self.assertWarns(RuntimeWarning) as cm:
             sc.command({'run_seq': data.tobytes()}, self.s)
