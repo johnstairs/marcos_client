@@ -236,6 +236,68 @@ class ModelTest(unittest.TestCase):
         self.assertEqual( str(cmr.warning) , "SERVER ERROR: gpa-fhdo gradient error; possibly missing samples")
         self.assertEqual(refl, siml)
 
+    def test_fhd_no_spurious_error_on_second_run(self):
+        """Run the same GPA-FHDO gradient sequence twice on the same
+        connection. The GRAD_CTRL pre-clear prepended to cl2bin's
+        initial_bufs loop must prevent a spurious fhdo_err on the second
+        run, even though the first run leaves fhdo_en=1 in the hardware
+        state.
+        """
+        set_grad_board("gpa-fhdo")
+        d = {'grad_vx': (np.array([10, 30]), np.array([-1.0, 1.0]))}
+        e = exp.Experiment(prev_socket=self.s, seq_dict=d,
+                           rx_t=0.5, auto_leds=False, assert_errors=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            e.run()  # first run: leaves fhdo_en=1 in hardware state
+            e.run()  # second run: pre-clear must prevent spurious fhdo_err
+        spurious = [w for w in caught
+                    if issubclass(w.category, RuntimeWarning)
+                    and "gpa-fhdo gradient error" in str(w.message)]
+        self.assertEqual(len(spurious), 0,
+                         "Spurious fhdo_err on second sequential run; "
+                         "GRAD_CTRL pre-clear may not be working")
+        # Shut the sim down so it does not block port 11111 for subsequent tests
+        sc.send_packet(sc.construct_packet({}, 0, command=sc.close_server_pkt), self.s)
+        self.s.close()  # socket close triggers mpack_error_io → server exits its read loop
+        self.p.wait(5)
+        restore_grad_board()
+
+    def test_fhd_too_fast_error_after_successful_run(self):
+        """After a successful GPA-FHDO run leaves fhdo_en=1, a subsequent
+        run with legitimately too-fast gradient updates must still be
+        detected as an error. The GRAD_CTRL pre-clear only suppresses
+        spurious initial_bufs errors; genuine in-sequence SPI collisions
+        must still be reported.
+        """
+        set_grad_board("gpa-fhdo")
+        # First run: normal sequence, leaves fhdo_en=1 in simulation state
+        d_ok = {'grad_vx': (np.array([10, 30]), np.array([-1.0, 1.0]))}
+        e_ok = exp.Experiment(prev_socket=self.s, seq_dict=d_ok,
+                              rx_t=0.5, auto_leds=False, assert_errors=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            e_ok.run()
+        # Second run: genuinely too-fast gradient updates must still raise fhdo_err.
+        # Use sc.command directly to avoid compare_csv's 1-second proc.wait limit.
+        source_csv = os.path.join("csvs", "test_fhd_too_fast.csv")
+        with self.assertWarns(mc.MarGradWarning) as cmg:
+            lc = mc.csv2bin(source_csv, quick_start=False,
+                            initial_bufs=fhd_config['initial_bufs'],
+                            latencies=fhd_config['latencies'])
+        self.assertEqual(str(cmg.warning),
+                         "Gradient updates are too frequent for selected SPI divider. Missed samples are likely!")
+        data = np.array(lc, dtype=np.uint32)
+        with self.assertWarns(RuntimeWarning) as cm:
+            sc.command({'run_seq': data.tobytes()}, self.s)
+        self.assertEqual(str(cm.warning),
+                         "SERVER ERROR: gpa-fhdo gradient error; possibly missing samples")
+        # Shut the sim down so it does not block port 11111 for subsequent tests
+        sc.send_packet(sc.construct_packet({}, 0, command=sc.close_server_pkt), self.s)
+        self.s.close()  # socket close triggers mpack_error_io → server exits its read loop
+        self.p.wait(5)
+        restore_grad_board()
+
     def test_oc1_single(self):
         """Single state change on ocra1 x gradient output, default SPI clock
         divisor; simultaneous change on TX0i
