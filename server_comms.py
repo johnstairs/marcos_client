@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import msgpack, warnings
+from beartype import beartype
 from collections.abc import Iterator
 from socket import socket as _Socket
 from typing import Any, NamedTuple, TypeAlias, TypedDict
@@ -52,10 +53,12 @@ Message: TypeAlias = list[Any]
 CommandResult: TypeAlias = tuple[Reply, StatusDict]
 
 
+@beartype
 def _is_reply(msg: Message) -> bool:
     """True if the message is a final reply (as opposed to an intermediate stream message)."""
     return msg[0] >= reply_pkt
 
+@beartype
 def construct_packet(
     data: dict[str, Any],
     packet_idx: int = 0,
@@ -105,6 +108,7 @@ def construct_packet(
 #         print("Reply data: ")
 #         print(reply_data)
 
+@beartype
 def receive_response(socket: _Socket) -> Iterator[Message]:
     """Yield each decoded message from the server.
     Intermediate (streaming) messages are yielded as-is.
@@ -122,6 +126,7 @@ def receive_response(socket: _Socket) -> Iterator[Message]:
                 assert trailing is None, "unexpected data after final reply"
                 return
 
+@beartype
 def send_packet(packet: Packet, socket: _Socket) -> Reply:
     socket.sendall(msgpack.packb(packet))
 
@@ -136,6 +141,7 @@ def send_packet(packet: Packet, socket: _Socket) -> Reply:
         raise ConnectionError("no reply received from server")
     return Reply(*reply)
 
+@beartype
 def _process_status(reply: Reply, print_infos: bool = False, assert_errors: bool = False) -> StatusDict:
     """Emit warnings/errors from a reply's status map."""
     return_status = reply.status
@@ -158,12 +164,14 @@ def _process_status(reply: Reply, print_infos: bool = False, assert_errors: bool
 
     return return_status
 
+@beartype
 def command(server_dict: dict[str, Any], socket: _Socket, print_infos: bool = False, assert_errors: bool = False, **params: Any) -> CommandResult:
     packet = construct_packet(server_dict, params=params if params else None)
     reply = send_packet(packet, socket)
     status = _process_status(reply, print_infos, assert_errors)
     return reply, status
 
+@beartype
 def streamed_command(
     server_dict: dict[str, Any], socket: _Socket, print_infos: bool = False, assert_errors: bool = False, **params: Any,
 ) -> Iterator[Message | CommandResult]:

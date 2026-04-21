@@ -12,8 +12,7 @@ Backwards-compatible: callers that prefer the raw ``(Reply, StatusDict)``
 tuple can keep using :func:`server_comms.command` directly.
 """
 
-from __future__ import annotations
-
+from beartype import beartype
 from collections.abc import Iterator
 from socket import socket as _Socket
 from typing import Any, Literal, NamedTuple, TypedDict
@@ -102,6 +101,7 @@ def _cmd(
 
 # ── Operations ───────────────────────────────────────────────────────
 
+@beartype
 def halt_and_reset(
     socket: _Socket, *, print_infos: bool = False, assert_errors: bool = False,
 ) -> tuple[bool, StatusDict]:
@@ -110,42 +110,47 @@ def halt_and_reset(
     return reply.data["halt_and_reset"], status
 
 
+@beartype
 def read_mem(
     socket: _Socket, *, print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
-    """Read directly from memory (server TODO).  Returns ``"ok"``."""
+) -> tuple[int, StatusDict]:
+    """Read directly from memory (server TODO).  Returns ``0`` on success."""
     reply, status = _cmd("read_mem", 0, socket, print_infos, assert_errors)
     return reply.data["read_mem"], status
 
 
+@beartype
 def fpga_clk(
     words: tuple[int, int, int], socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
+) -> tuple[int, StatusDict]:
     """Configure the FPGA clock.  *words* is a 3-element tuple of uint32 values.
-    Returns ``"ok"`` or ``"err"``."""
+    Returns ``0`` on success or ``-1`` on error."""
     reply, status = _cmd("fpga_clk", list(words), socket, print_infos, assert_errors)
     return reply.data["fpga_clk"], status
 
 
+@beartype
 def ctrl(
     value: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
-    """Write to the main control register.  Returns ``"ok"``."""
+) -> tuple[int, StatusDict]:
+    """Write to the main control register.  Returns ``0`` on success."""
     reply, status = _cmd("ctrl", value, socket, print_infos, assert_errors)
     return reply.data["ctrl"], status
 
 
+@beartype
 def direct(
     value: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
-    """Write directly to a buffer.  Returns ``"ok"``."""
+) -> tuple[int, StatusDict]:
+    """Write directly to a buffer.  Returns ``0`` on success."""
     reply, status = _cmd("direct", value, socket, print_infos, assert_errors)
     return reply.data["direct"], status
 
 
+@beartype
 def regrd(
     index: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
@@ -155,6 +160,7 @@ def regrd(
     return reply.data["regrd"], status
 
 
+@beartype
 def regstatus(
     socket: _Socket, *, print_infos: bool = False, assert_errors: bool = False,
 ) -> tuple[RegStatus, StatusDict]:
@@ -163,52 +169,57 @@ def regstatus(
     return RegStatus(*reply.data["regstatus"]), status
 
 
+@beartype
 def mar_mem(
     data: bytes, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
-    """Write execution memory.  Returns ``"ok"`` or ``"err"``."""
+) -> tuple[int, StatusDict]:
+    """Write execution memory.  Returns ``0`` on success or ``-1`` on error."""
     reply, status = _cmd("mar_mem", data, socket, print_infos, assert_errors)
     return reply.data["mar_mem"], status
 
 
+@beartype
 def acq_rlim(
     limit: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[str, StatusDict]:
+) -> tuple[int, StatusDict]:
     """Configure the acquisition retry limit (must be in [1000, 10_000_000]).
-    Returns ``"ok"`` or ``"err"``."""
+    Returns ``0`` on success or ``-1`` on error."""
     reply, status = _cmd("acq_rlim", limit, socket, print_infos, assert_errors)
     return reply.data["acq_rlim"], status
 
 
+@beartype
 def read_rx(
     socket: _Socket, *, print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[RxData | str, StatusDict]:
+) -> tuple[RxData | int, StatusDict]:
     """Read outstanding RX FIFO data.  Returns an :class:`RxData` dict, or
-    ``"ok"`` if there was no data."""
+    ``0`` if there was no data."""
     reply, status = _cmd("read_rx", 0, socket, print_infos, assert_errors)
     return reply.data["read_rx"], status
 
 
+@beartype
 def run_seq(
     bytecode: bytes, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> tuple[RxData | str, StatusDict]:
-    """Run a compiled sequence.  Returns an :class:`RxData` dict, or ``"ok"``
+) -> tuple[RxData | int, StatusDict]:
+    """Run a compiled sequence.  Returns an :class:`RxData` dict, or ``0``
     if no RX data was received."""
     reply, status = _cmd("run_seq", bytecode, socket, print_infos, assert_errors)
     return reply.data["run_seq"], status
 
 
+@beartype
 def run_seq_streamed(
     bytecode: bytes, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
-) -> Iterator[RxData | tuple[RxData | str, StatusDict]]:
+) -> Iterator[RxData | tuple[RxData | int, StatusDict]]:
     """Run a sequence with RX streaming.
 
     Yields intermediate :class:`RxData` chunks.  The last yielded value is a
-    ``(RxData | str, StatusDict)`` tuple with the final reply."""
+    ``(RxData | int, StatusDict)`` tuple with the final reply."""
     for msg in streamed_command(
         {"run_seq": bytecode}, socket,
         print_infos=print_infos, assert_errors=assert_errors,
@@ -222,6 +233,7 @@ def run_seq_streamed(
             yield msg[2]
 
 
+@beartype
 def test_net(
     data_size: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
@@ -231,6 +243,7 @@ def test_net(
     return reply.data["test_net"], status
 
 
+@beartype
 def test_bus(
     n_tests: int, socket: _Socket, *,
     print_infos: bool = False, assert_errors: bool = False,
@@ -243,6 +256,7 @@ def test_bus(
 ServerKind = Literal["hardware", "simulation", "software"]
 
 
+@beartype
 def are_you_real(
     socket: _Socket, *, print_infos: bool = False, assert_errors: bool = False,
 ) -> tuple[ServerKind, StatusDict]:
@@ -251,11 +265,13 @@ def are_you_real(
     return reply.data["are_you_real"], status
 
 
+@beartype
 def close_server(socket: _Socket) -> Reply:
     """Send the close-server packet.  The server will shut down."""
     return send_packet(construct_packet({}, 0, command=close_server_pkt), socket)
 
 
+@beartype
 def server_version(socket: _Socket) -> int:
     """Return the server's protocol version uint.
 

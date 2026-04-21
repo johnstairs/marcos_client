@@ -116,7 +116,10 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, {})
 
     def test_bad_packet(self):
-        packet = construct_packet([1,2,3])
+        # Manually build a malformed packet (list instead of dict for data)
+        # to test the server's error handling — bypasses construct_packet's
+        # type checking intentionally.
+        packet = Packet(request_pkt, 0, 0, version_full, [1, 2, 3])
         reply = send_packet(packet, self.s)
         self.assertEqual(reply,
                          (reply_pkt, 1, 0, version_full,
