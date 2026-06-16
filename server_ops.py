@@ -51,6 +51,7 @@ __all__ = [
     "run_seq",
     "run_seq_streamed",
     "server_version",
+    "set_gpa_zero_words",
     "test_bus",
     "test_net",
 ]
@@ -108,6 +109,25 @@ def halt_and_reset(
     """Halt and reset the FSM.  Returns ``True`` if the FSM has halted."""
     reply, status = _cmd("halt_and_reset", 0, socket, print_infos, assert_errors)
     return reply.data["halt_and_reset"], status
+
+
+@beartype
+def set_gpa_zero_words(
+    words: list[int], socket: _Socket, *,
+    print_infos: bool = False, assert_errors: bool = False,
+) -> tuple[int, StatusDict]:
+    """Register the per-channel "zero current" direct-write words used
+    by ``halt_and_reset`` to park the gradient DACs at midpoint.
+
+    *words* is a list of 32-bit gradient-serialiser frames (one per
+    channel) computed client-side via ``grad_board.float2bin`` and
+    ``marcompile.col2buf``. Old servers that do not implement this
+    command will simply ignore it (status ``-1``); the cancel path
+    will then leave the DACs latched at their last sample.
+    """
+    reply, status = _cmd("set_gpa_zero_words", list(words), socket,
+                         print_infos, assert_errors)
+    return reply.data.get("set_gpa_zero_words", 0), status
 
 
 @beartype
