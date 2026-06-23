@@ -63,6 +63,9 @@ class OCRA1:
         # bind function from Experiment class, or replace with something else for debugging
         self.server_command = server_command_f
 
+        self.grad_channels = 4
+        self.grad_col_base = 9 # marcompile.col2buf columns 9..12 are ocra1 ch 0..3
+
         # Default calibration settings for all channels: linear transformation for now
         self.cal_values = [ (1,0), (1,0), (1,0), (1,0) ]
 
@@ -181,6 +184,7 @@ class GPAFHDO:
 
         # TODO: will this ever need modification?
         self.grad_channels = 4
+        self.grad_col_base = 5 # marcompile.col2buf columns 5..8 are gpa-fhdo ch 0..3
 
         # try to get from local_config.py
         try:
