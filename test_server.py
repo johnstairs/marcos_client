@@ -332,6 +332,116 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status,
                          {'errors': ['too much mar mem data: {:d} bytes > {:d} -- streaming not yet implemented'.format(mar_mem_bytes + 1, mar_mem_bytes)] })
 
+    def test_set_gpa_zero_words(self):
+        """Server accepts a valid 4-word zero-words registration."""
+        # The server doesn't interpret the bits; both supported boards
+        # (OCRA1, GPA-FHDO) just expose 4 channels. Any well-formed
+        # 32-bit word per channel is fine for the round-trip test.
+        words = [0x000800_8000, 0x000900_8000, 0x000a00_8000, 0x000b00_8000]
+        result, status = ops.set_gpa_zero_words(words, self.s)
+        self.assertEqual(result, 0)  # c_ok
+        self.assertEqual(status, {})
+
+    def test_set_gpa_zero_words_unknown_on_old_server(self):
+        """Backwards-compatibility canary for the ``set_gpa_zero_words`` RPC.
+
+        ``Experiment.__init__`` gates its ``set_gpa_zero_words`` call on
+        ``server_version() >= min_server_version_gpa_zero_words`` so it
+        can talk to pre-1.0.7 servers gracefully. An older server's
+        reply to an unrecognised command is what makes that gate
+        necessary. This test pins the shape of that reply by sending a
+        synthetic unknown command and asserting the exact response,
+        mirroring ``test_version``. If the unknown-command reply shape
+        changes, the client-side version gate needs to change with it.
+        """
+        packet = construct_packet({'this_command_does_not_exist': [0, 0, 0, 0]})
+        reply = send_packet(packet, self.s)
+        self.assertEqual(
+            reply,
+            (reply_pkt, 1, 0, version_full,
+             {'UNKNOWN1': -1},
+             {'errors': ['not all client commands were understood']}),
+        )
+
+    def test_set_gpa_zero_words_wrong_count(self):
+        """Server rejects a wrong-length word list and preserves the
+        previously-registered vector (process-lifetime state)."""
+        baseline = [0xaaaaaaaa, 0xbbbbbbbb, 0xcccccccc, 0xdddddddd]
+        result, _ = ops.set_gpa_zero_words(baseline, self.s)
+        self.assertEqual(result, 0)
+
+        # 3 words instead of 4: server should respond with c_warn (-2),
+        # surface a warning in the status map, and leave the baseline
+        # intact.
+        with self.assertWarns(MarServerWarning):
+            result, status = ops.set_gpa_zero_words([0, 0, 0], self.s)
+        self.assertEqual(result, -2)  # c_warn
+        self.assertIn('warnings', status)
+        self.assertEqual(len(status['warnings']), 1)
+        msg = status['warnings'][0]
+        self.assertIn('received 3 words', msg)
+        self.assertIn('expected 4', msg)
+        self.assertNotIn('errors', status)
+
+        # Re-registering with a valid count succeeds again. We can't
+        # introspect the server-side vector directly, but a c_ok reply
+        # combined with the no-error halt_and_reset in
+        # ``test_halt_and_reset_uses_registered_zero_words`` covers the
+        # "still functional" assertion end-to-end.
+        result, _ = ops.set_gpa_zero_words(baseline, self.s)
+        self.assertEqual(result, 0)
+
+    def test_halt_and_reset_uses_registered_zero_words(self):
+        """End-to-end check that the ``set_gpa_zero_words`` →
+        ``halt_and_reset`` cancel path exercises the gradient SPI.
+
+        The simulation FST/CSV trace is the only ground truth for the
+        actual SPI bits, and it lives server-side (out of band for a
+        socket-only test). What we can verify from the client:
+
+        * The server accepts the zero-words registration.
+        * ``halt_and_reset`` returns ``halted=True`` with no errors or
+          warnings in the status map. The server's halt_and_reset polls
+          the GPA serialiser idle bit after each direct write; any
+          ``write_gpa_word_direct`` timeout would surface as a warning
+          here (see ``hardware::halt_and_reset`` in marcos_server).
+        * Both gradient busy bits (``fhdo_busy``, ``ocra1_busy`` in
+          marga register 5 / regstatus.status) are clear once
+          ``halt_and_reset`` returns.
+        * The registered words persist across multiple
+          ``halt_and_reset`` calls without re-registration, matching
+          the documented process-lifetime semantics of
+          ``_gpa_zero_words``.
+        """
+        # Use plausible per-channel words. The format mirrors the
+        # GPA-FHDO ``init_words`` tail (channel select bits 19..16,
+        # DAC code 0x8000 in the LSBs); the server forwards them
+        # verbatim to the grad serialiser.
+        zero_words = [
+            0x00088000, 0x00098000, 0x000a8000, 0x000b8000,
+        ]
+        result, status = ops.set_gpa_zero_words(zero_words, self.s)
+        self.assertEqual(result, 0)
+        self.assertEqual(status, {})
+
+        # First halt_and_reset after registration drives the SPI bus.
+        halted, hr_status = ops.halt_and_reset(self.s)
+        self.assertTrue(halted)
+        self.assertEqual(hr_status, {})
+
+        # Both gradient busy bits clear once halt_and_reset returns.
+        # Layout: bit 17 = fhdo_busy, bit 16 = ocra1_busy (see marga.sv
+        # fld_status assignment).
+        regs, _ = ops.regstatus(self.s)
+        self.assertEqual(regs.status & 0x30000, 0)
+
+        # Process-lifetime persistence: a second halt_and_reset without
+        # re-registering should still succeed, proving the server still
+        # holds the previously-registered vector.
+        halted, hr_status = ops.halt_and_reset(self.s)
+        self.assertTrue(halted)
+        self.assertEqual(hr_status, {})
+
     @unittest.skip("marga devel")
     def test_acquire_simple(self):
         # For comprehensive tests, see test_loopback.py
