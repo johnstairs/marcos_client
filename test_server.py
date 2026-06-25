@@ -372,6 +372,9 @@ class ServerTest(unittest.TestCase):
         result, _ = ops.set_gpa_zero_words(baseline, self.s)
         self.assertEqual(result, 0)
 
+    @unittest.skipUnless(grad_board in ("ocra1", "gpa-fhdo"),
+                         "requires local_config.grad_board to be set "
+                         "(MONARCH_GRAD_BOARD env var when run via just)")
     def test_halt_and_reset_uses_registered_zero_words(self):
         """End-to-end check that the ``set_gpa_zero_words`` →
         ``halt_and_reset`` cancel path exercises the gradient SPI.
@@ -401,25 +404,13 @@ class ServerTest(unittest.TestCase):
         # exercises what production really sends -- including the
         # per-channel mirror bits (channel << 25) that hand-built words
         # would miss for channels 1..3.
-        #
-        # marcompile.col2buf branches on the module-level ``grad_board``
-        # (loaded from local_config at import time). CI sets it to ''
-        # to keep test_server board-agnostic, which would make col2buf
-        # raise "Unknown grad board". Override it locally to GPA-FHDO
-        # for the duration of the test -- the hardware on the CI runner
-        # is GPA-FHDO (see test_grad_adc above, which is gated on the
-        # same string).
-        original_grad_board = fc.grad_board
-        fc.grad_board = 'gpa-fhdo'
-        try:
-            gradb = gb.GPAFHDO(lambda d: command(d, self.s))
-            zero_words = []
-            for ch in range(gradb.grad_channels):
-                dac_bin = gradb.float2bin(np.zeros(1), channel=ch)
-                _, (msb, lsb), _ = fc.col2buf(gradb.grad_col_base + ch, dac_bin)
-                zero_words.append(int((int(msb[0]) << 16) | int(lsb[0])))
-        finally:
-            fc.grad_board = original_grad_board
+        gradb_class = gb.OCRA1 if grad_board == 'ocra1' else gb.GPAFHDO
+        gradb = gradb_class(lambda d: command(d, self.s))
+        zero_words = []
+        for ch in range(gradb.grad_channels):
+            dac_bin = gradb.float2bin(np.zeros(1), channel=ch)
+            _, (msb, lsb), _ = fc.col2buf(gradb.grad_col_base + ch, dac_bin)
+            zero_words.append(int((int(msb[0]) << 16) | int(lsb[0])))
 
         result, status = ops.set_gpa_zero_words(zero_words, self.s)
         self.assertEqual(result, 0)
