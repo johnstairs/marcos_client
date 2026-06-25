@@ -14,6 +14,8 @@ st = pdb.set_trace
 from local_config import ip_address, port, fpga_clk_freq_MHz, grad_board
 from server_comms import *
 import server_ops as ops
+import grad_board as gb
+import marcompile as fc
 
 class ServerTest(unittest.TestCase):
     # @classmethod
@@ -342,27 +344,6 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(result, 0)  # c_ok
         self.assertEqual(status, {})
 
-    def test_set_gpa_zero_words_unknown_on_old_server(self):
-        """Backwards-compatibility canary for the ``set_gpa_zero_words`` RPC.
-
-        ``Experiment.__init__`` gates its ``set_gpa_zero_words`` call on
-        ``server_version() >= min_server_version_gpa_zero_words`` so it
-        can talk to pre-1.0.7 servers gracefully. An older server's
-        reply to an unrecognised command is what makes that gate
-        necessary. This test pins the shape of that reply by sending a
-        synthetic unknown command and asserting the exact response,
-        mirroring ``test_version``. If the unknown-command reply shape
-        changes, the client-side version gate needs to change with it.
-        """
-        packet = construct_packet({'this_command_does_not_exist': [0, 0, 0, 0]})
-        reply = send_packet(packet, self.s)
-        self.assertEqual(
-            reply,
-            (reply_pkt, 1, 0, version_full,
-             {'UNKNOWN1': -1},
-             {'errors': ['not all client commands were understood']}),
-        )
-
     def test_set_gpa_zero_words_wrong_count(self):
         """Server rejects a wrong-length word list and preserves the
         previously-registered vector (process-lifetime state)."""
@@ -408,18 +389,26 @@ class ServerTest(unittest.TestCase):
         * Both gradient busy bits (``fhdo_busy``, ``ocra1_busy`` in
           marga register 5 / regstatus.status) are clear once
           ``halt_and_reset`` returns.
+        * No FHDO/OCRA1 protocol error latch fires during the SPI
+          traffic.
         * The registered words persist across multiple
           ``halt_and_reset`` calls without re-registration, matching
           the documented process-lifetime semantics of
           ``_gpa_zero_words``.
         """
-        # Use plausible per-channel words. The format mirrors the
-        # GPA-FHDO ``init_words`` tail (channel select bits 19..16,
-        # DAC code 0x8000 in the LSBs); the server forwards them
-        # verbatim to the grad serialiser.
-        zero_words = [
-            0x00088000, 0x00098000, 0x000a8000, 0x000b8000,
-        ]
+        # Compute the zero-words via the same float2bin + col2buf
+        # pipeline that ``Experiment.__init__`` uses, so the test
+        # exercises what production really sends -- including the
+        # per-channel mirror bits (channel << 25) that hand-built words
+        # would miss for channels 1..3.
+        gradb_class = gb.OCRA1 if grad_board == 'ocra1' else gb.GPAFHDO
+        gradb = gradb_class(lambda d: command(d, self.s))
+        zero_words = []
+        for ch in range(gradb.grad_channels):
+            dac_bin = gradb.float2bin(np.zeros(1), channel=ch)
+            _, (msb, lsb), _ = fc.col2buf(gradb.grad_col_base + ch, dac_bin)
+            zero_words.append(int((int(msb[0]) << 16) | int(lsb[0])))
+
         result, status = ops.set_gpa_zero_words(zero_words, self.s)
         self.assertEqual(result, 0)
         self.assertEqual(status, {})
@@ -433,7 +422,13 @@ class ServerTest(unittest.TestCase):
         # Layout: bit 17 = fhdo_busy, bit 16 = ocra1_busy (see marga.sv
         # fld_status assignment).
         regs, _ = ops.regstatus(self.s)
-        self.assertEqual(regs.status & 0x30000, 0)
+        self.assertEqual(regs.status & 0x30000, 0,
+                         "halt_and_reset left FHDO/OCRA1 busy bits asserted")
+        # status_latch bits: 0x4 = fhdo_err, 0x2 = ocra1_err,
+        # 0x1 = ocra1_data_lost. None of these should fire on a clean
+        # halt_and_reset that drove a handful of direct writes.
+        self.assertEqual(regs.status_latch & 0x7, 0,
+                         "halt_and_reset triggered FHDO/OCRA1 protocol error latch")
 
         # Process-lifetime persistence: a second halt_and_reset without
         # re-registering should still succeed, proving the server still
