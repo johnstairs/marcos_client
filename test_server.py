@@ -372,6 +372,9 @@ class ServerTest(unittest.TestCase):
         result, _ = ops.set_gpa_zero_words(baseline, self.s)
         self.assertEqual(result, 0)
 
+    @unittest.skipUnless(grad_board in ("ocra1", "gpa-fhdo"),
+                         "requires local_config.grad_board to be set to a "
+                         "supported board to compute board-specific zero words")
     def test_halt_and_reset_uses_registered_zero_words(self):
         """End-to-end check that the ``set_gpa_zero_words`` →
         ``halt_and_reset`` cancel path exercises the gradient SPI.
