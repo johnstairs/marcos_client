@@ -50,6 +50,21 @@ st = pdb.set_trace
 grad_clk_t = 1/lc.fpga_clk_freq_MHz # ~8.14ns period for RP-122
 
 class OCRA1:
+    # Per-channel 32-bit direct-write words that park the OCRA1 DAC
+    # outputs at zero. Same encoding as the trailing "set outputs to 0"
+    # entries in init_hw's init_words; halt_and_reset on the server
+    # reuses them after an emergency stop / cancel.
+    _GRAD_ZERO_WORDS = (0x00100000, 0x02100000, 0x04100000, 0x07100000)
+
+    # Full sequence of direct-write words shifted out by init_hw() to
+    # bring the OCRA1 into a known state. Lower 24 bits go to the
+    # OCRA1 chip; upper 8 bits drive the serialiser channel + broadcast.
+    _INIT_WORDS = (
+        0x00400004, 0x02400004, 0x04400004, 0x07400004, # reset DACs to power-on values
+        0x00200002, 0x02200002, 0x04200002, 0x07200002, # set internal amplifier
+        *_GRAD_ZERO_WORDS, # set outputs to 0
+    )
+
     def __init__(self,
                  server_command_f,
                  max_update_rate=0.1):
@@ -106,20 +121,13 @@ class OCRA1:
                 trials -= 1 # try again
 
     def init_hw(self):
-        init_words = [
-            # lower 24 bits sent to ocra1, upper 8 bits used to control ocra1 serialiser channel + broadcast
-            0x00400004, 0x02400004, 0x04400004, 0x07400004, # reset DACs to power-on values
-            0x00200002, 0x02200002, 0x04200002, 0x07200002, # set internal amplifier
-            0x00100000, 0x02100000, 0x04100000, 0x07100000, # set outputs to 0
-        ]
-
         # configure main grad ctrl word first, in particular switch it to update the serialiser strobe only in response to LSB changes;
         # strobe the reset of the core just in case
         # (marga buffer address = 0, 8 MSBs of the 32-bit word)
         self.server_command({'direct': 0x00000000 | (1 << 0) | (self.spi_div << 2) | (0 << 8) | (0 << 9)})
         self.server_command({'direct': 0x00000000 | (1 << 0) | (self.spi_div << 2) | (1 << 8) | (0 << 9)})
 
-        for k, iw in enumerate(init_words):
+        for iw in self._INIT_WORDS:
             self.wait_for_ocra1_iface_idle()
 
             # direct commands to grad board; send MSBs then LSBs
@@ -166,6 +174,24 @@ class OCRA1:
         return ( ((grad_bin & 0x3ffff).astype(np.int32) ^ (1 << 17)) - (1 << 17) ).astype(np.int32) / 131072
 
 class GPAFHDO:
+    # Per-channel 32-bit direct-write words that park the GPA-FHDO DAC
+    # outputs at zero. Same encoding as the trailing "set each DAC channel
+    # to output 0" entries in init_hw's init_words; halt_and_reset on the
+    # server reuses them after an emergency stop / cancel.
+    _GRAD_ZERO_WORDS = (0x00088000, 0x00098000, 0x000a8000, 0x000b8000)
+
+    # Full sequence of direct-write words shifted out by init_hw() to
+    # bring the GPA-FHDO into a known state (DAC reset + config, ADC
+    # reset + per-channel input ranges, then park each DAC channel at
+    # zero). Also mirrored in test_server.test_grad_adc.
+    _INIT_WORDS = (
+        0x0005000a, # DAC trigger reg, soft reset of the chip
+        0x00030100, # DAC config reg, disable internal ref
+        0x40850000, # ADC reset
+        0x400b0600, 0x400d0600, 0x400f0600, 0x40110600, # input ranges for each ADC channel
+        *_GRAD_ZERO_WORDS, # set each DAC channel to output 0
+    )
+
     def __init__(self,
                  server_command_f,
                  max_update_rate=0.1):
@@ -239,22 +265,13 @@ class GPAFHDO:
                 trials -= 1 # try again
 
     def init_hw(self):
-        # write defaults
-        init_words = [
-            0x0005000a, # DAC trigger reg, soft reset of the chip
-            0x00030100, # DAC config reg, disable internal ref
-            0x40850000, # ADC reset
-            0x400b0600, 0x400d0600, 0x400f0600, 0x40110600, # input ranges for each ADC channel
-            0x00088000, 0x00098000, 0x000a8000, 0x000b8000 # set each DAC channel to output 0
-        ]
-
         # configure main grad ctrl word first, in particular switch it to update the serialiser strobe only in response to LSB changes;
         # gpa_fhdo_iface core has no reset, so no need to strobe it unlike for ocra1
         # (marga buffer address = 0, 8 MSBs of the 32-bit word)
 
         self.server_command({'direct': 0x00000000 | (2 << 0) | (self.adc_spi_div << 2) | (0 << 8) | (0 << 9)})
 
-        for iw in init_words:
+        for iw in self._INIT_WORDS:
             self.wait_for_gpa_fhdo_iface_idle()
 
             # direct commands to grad board; send MSBs then LSBs

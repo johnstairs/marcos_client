@@ -14,6 +14,7 @@ st = pdb.set_trace
 from local_config import ip_address, port, fpga_clk_freq_MHz, grad_board
 from server_comms import *
 import server_ops as ops
+import grad_board as gb
 
 class ServerTest(unittest.TestCase):
     # @classmethod
@@ -255,14 +256,10 @@ class ServerTest(unittest.TestCase):
         upd = False # update on MSB writes
         ops.direct(0x00000000 | (2 << 0) | (spi_div << 2) | (0 << 8) | (upd << 9), self.s)
 
-        # ADC defaults, same as in grad_board.GPAFHDO.init_hw()
-        init_words = [
-            0x0005000a, # DAC trigger reg, soft reset of the chip
-            0x00030100, # DAC config reg, disable internal ref
-            0x40850000, # ADC reset
-            0x400b0600, 0x400d0600, 0x400f0600, 0x40110600, # input ranges for each ADC channel
-            0x00088000, 0x00098000, 0x000a8000, 0x000b8000 # set each DAC channel to output 0
-        ]
+        # ADC defaults, same as in grad_board.GPAFHDO.init_hw().
+        # Single source of truth lives on the board class so the two
+        # sequences cannot drift apart.
+        init_words = gb.GPAFHDO._INIT_WORDS
 
         real, _ = ops.are_you_real(self.s)
         if real in ['simulation', 'software']:
@@ -335,9 +332,10 @@ class ServerTest(unittest.TestCase):
     def test_set_gpa_zero_words(self):
         """Server accepts a valid 4-word zero-words registration."""
         # The server doesn't interpret the bits; both supported boards
-        # (OCRA1, GPA-FHDO) just expose 4 channels. Any well-formed
-        # 32-bit word per channel is fine for the round-trip test.
-        words = [0x000800_8000, 0x000900_8000, 0x000a00_8000, 0x000b00_8000]
+        # (OCRA1, GPA-FHDO) just expose 4 channels. Use the GPA-FHDO
+        # production vector so the round-trip exercises the same shape
+        # Experiment.__init__ sends in real use.
+        words = list(gb.GPAFHDO._GRAD_ZERO_WORDS)
         result, status = ops.set_gpa_zero_words(words, self.s)
         self.assertEqual(result, 0)  # c_ok
         self.assertEqual(status, {})
@@ -400,11 +398,12 @@ class ServerTest(unittest.TestCase):
         correctness needs a real board and is out of scope for this
         runner.
         """
-        # Hand-crafted 4-word vector. The server doesn't interpret the
-        # bits during halt_and_reset -- it just shifts them out via
-        # write_gpa_word_direct, one per registered channel. Same shape
-        # as test_set_gpa_zero_words.
-        zero_words = [0x000800_8000, 0x000900_8000, 0x000a00_8000, 0x000b00_8000]
+        # Production 4-word vector for GPA-FHDO. The server doesn't
+        # interpret the bits during halt_and_reset -- it just shifts
+        # them out via write_gpa_word_direct, one per registered
+        # channel -- but using the real constant keeps the test aligned
+        # with what Experiment.__init__ sends in real use.
+        zero_words = list(gb.GPAFHDO._GRAD_ZERO_WORDS)
 
         result, status = ops.set_gpa_zero_words(zero_words, self.s)
         self.assertEqual(result, 0)

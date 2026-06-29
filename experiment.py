@@ -133,13 +133,16 @@ class Experiment:
 
             # Register per-channel "zero current" direct-write words with
             # the server so halt_and_reset() can park the gradient DACs
-            # at midpoint after an emergency stop / cancel. Skipped if
-            # init_gpa is False: in that case we trust an earlier
-            # Experiment to have already registered them on this server.
-            # Also skipped if the server is older than 1.0.7 (where the
-            # ``set_gpa_zero_words`` RPC was added); old servers silently
-            # drop the command, but on those the DACs will remain latched
-            # at their last sample after a cancel.
+            # at midpoint after an emergency stop / cancel. The words come
+            # straight from the board class (same encoding as the trailing
+            # entries in its init_hw init_words), so this matches what
+            # init_hw just programmed. Skipped if init_gpa is False: in
+            # that case we trust an earlier Experiment to have already
+            # registered them on this server. Also skipped if the server
+            # is older than 1.0.7 (where the ``set_gpa_zero_words`` RPC
+            # was added); old servers silently drop the command, but on
+            # those the DACs will remain latched at their last sample
+            # after a cancel.
             srv_ver = ops.server_version(self._s)
             if srv_ver < sc.min_server_version_gpa_zero_words:
                 warnings.warn(
@@ -149,12 +152,7 @@ class Experiment:
                     "DACs will remain latched at their last sample on cancel."
                 )
             else:
-                zero_words = []
-                for ch in range(self.gradb.grad_channels):
-                    dac_bin = self.gradb.float2bin(np.zeros(1), channel=ch)
-                    _, (msb, lsb), _ = fc.col2buf(self.gradb.grad_col_base + ch, dac_bin)
-                    zero_words.append(int((int(msb[0]) << 16) | int(lsb[0])))
-                ops.set_gpa_zero_words(zero_words, self._s)
+                ops.set_gpa_zero_words(list(self.gradb._GRAD_ZERO_WORDS), self._s)
 
         if halt_and_reset:
             halted, _ = ops.halt_and_reset(self._s)
