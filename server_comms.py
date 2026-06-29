@@ -10,8 +10,14 @@ from marmachine import MarServerWarning
 
 version_major = 1
 version_minor = 0
-version_debug = 6
+version_debug = 7
 version_full = (version_major << 16) | (version_minor << 8) | version_debug
+
+# Minimum marcos_server version that implements the ``set_gpa_zero_words``
+# RPC used by ``Experiment.__init__`` to register the per-channel zero
+# words consumed by ``halt_and_reset``. Servers older than this silently
+# discard the command, so the client gates the registration on this.
+min_server_version_gpa_zero_words = (1 << 16) | (0 << 8) | 7  # 1.0.7
 
 request_pkt = 0
 emergency_stop_pkt = 1

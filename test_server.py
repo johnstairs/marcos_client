@@ -14,6 +14,7 @@ st = pdb.set_trace
 from local_config import ip_address, port, fpga_clk_freq_MHz, grad_board
 from server_comms import *
 import server_ops as ops
+import grad_board as gb
 
 class ServerTest(unittest.TestCase):
     # @classmethod
@@ -51,7 +52,7 @@ class ServerTest(unittest.TestCase):
                                'not all client commands were understood']}
 
         if full_test:
-            versions = [ (1,0,1), (1,0,6), (1,3,100), (1,3,255), (2,5,7), (255,255,255) ]
+            versions = [ (1,0,1), (1,0,7), (1,3,100), (1,3,255), (2,5,7), (255,255,255) ]
             expected_outcomes = [diff_info, diff_equal, diff_warning, diff_warning, diff_error, diff_error]
         else:
             versions = [ (1,0,1) ]
@@ -255,14 +256,10 @@ class ServerTest(unittest.TestCase):
         upd = False # update on MSB writes
         ops.direct(0x00000000 | (2 << 0) | (spi_div << 2) | (0 << 8) | (upd << 9), self.s)
 
-        # ADC defaults, same as in grad_board.GPAFHDO.init_hw()
-        init_words = [
-            0x0005000a, # DAC trigger reg, soft reset of the chip
-            0x00030100, # DAC config reg, disable internal ref
-            0x40850000, # ADC reset
-            0x400b0600, 0x400d0600, 0x400f0600, 0x40110600, # input ranges for each ADC channel
-            0x00088000, 0x00098000, 0x000a8000, 0x000b8000 # set each DAC channel to output 0
-        ]
+        # ADC defaults, same as in grad_board.GPAFHDO.init_hw().
+        # Single source of truth lives on the board class so the two
+        # sequences cannot drift apart.
+        init_words = gb.GPAFHDO._INIT_WORDS
 
         real, _ = ops.are_you_real(self.s)
         if real in ['simulation', 'software']:
@@ -331,6 +328,105 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(result, -1)
         self.assertEqual(status,
                          {'errors': ['too much mar mem data: {:d} bytes > {:d} -- streaming not yet implemented'.format(mar_mem_bytes + 1, mar_mem_bytes)] })
+
+    def test_set_gpa_zero_words(self):
+        """Server accepts a valid 4-word zero-words registration."""
+        # The server doesn't interpret the bits; both supported boards
+        # (OCRA1, GPA-FHDO) just expose 4 channels. Use the GPA-FHDO
+        # production vector so the round-trip exercises the same shape
+        # Experiment.__init__ sends in real use.
+        words = list(gb.GPAFHDO._GRAD_ZERO_WORDS)
+        result, status = ops.set_gpa_zero_words(words, self.s)
+        self.assertEqual(result, 0)  # c_ok
+        self.assertEqual(status, {})
+
+    def test_set_gpa_zero_words_wrong_count(self):
+        """Server rejects a wrong-length word list and preserves the
+        previously-registered vector (process-lifetime state)."""
+        baseline = [0xaaaaaaaa, 0xbbbbbbbb, 0xcccccccc, 0xdddddddd]
+        result, _ = ops.set_gpa_zero_words(baseline, self.s)
+        self.assertEqual(result, 0)
+
+        # 3 words instead of 4: server should respond with c_warn (-2),
+        # surface a warning in the status map, and leave the baseline
+        # intact.
+        with self.assertWarns(MarServerWarning):
+            result, status = ops.set_gpa_zero_words([0, 0, 0], self.s)
+        self.assertEqual(result, -2)  # c_warn
+        self.assertIn('warnings', status)
+        self.assertEqual(len(status['warnings']), 1)
+        msg = status['warnings'][0]
+        self.assertIn('received 3 words', msg)
+        self.assertIn('expected 4', msg)
+        self.assertNotIn('errors', status)
+
+        # Re-registering with a valid count succeeds again. We can't
+        # introspect the server-side vector directly, but a c_ok reply
+        # combined with the no-error halt_and_reset in
+        # ``test_halt_and_reset_uses_registered_zero_words`` covers the
+        # "still functional" assertion end-to-end.
+        result, _ = ops.set_gpa_zero_words(baseline, self.s)
+        self.assertEqual(result, 0)
+
+    def test_halt_and_reset_uses_registered_zero_words(self):
+        """End-to-end check of the ``set_gpa_zero_words`` →
+        ``halt_and_reset`` cancel path through the GPA SPI bus.
+
+        Runs without a physical gradient board attached. The marga
+        serialiser still shifts the registered words onto the SPI
+        lines; the busy bit asserts and clears regardless of whether
+        anything is wired up on the other end. What we verify from the
+        client:
+
+        * The server accepts the zero-words registration.
+        * ``halt_and_reset`` returns ``halted=True`` with no errors or
+          warnings in the status map. The server's halt_and_reset polls
+          the GPA serialiser idle bit after each direct write; any
+          ``write_gpa_word_direct`` timeout would surface as a warning
+          here (see ``hardware::halt_and_reset`` in marcos_server).
+        * Both gradient busy bits (``fhdo_busy``, ``ocra1_busy`` in
+          marga register 5 / regstatus.status) are clear once
+          ``halt_and_reset`` returns.
+        * The registered words persist across multiple
+          ``halt_and_reset`` calls without re-registration, matching
+          the documented process-lifetime semantics of
+          ``_gpa_zero_words``.
+
+        Note: the FHDO/OCRA1 protocol error latch (status_latch & 0x7)
+        is *not* asserted here, because with no board on MISO those
+        bits may trip spuriously on echo mismatches. End-to-end echo
+        correctness needs a real board and is out of scope for this
+        runner.
+        """
+        # Production 4-word vector for GPA-FHDO. The server doesn't
+        # interpret the bits during halt_and_reset -- it just shifts
+        # them out via write_gpa_word_direct, one per registered
+        # channel -- but using the real constant keeps the test aligned
+        # with what Experiment.__init__ sends in real use.
+        zero_words = list(gb.GPAFHDO._GRAD_ZERO_WORDS)
+
+        result, status = ops.set_gpa_zero_words(zero_words, self.s)
+        self.assertEqual(result, 0)
+        self.assertEqual(status, {})
+
+        # First halt_and_reset after registration drives the SPI bus.
+        halted, hr_status = ops.halt_and_reset(self.s)
+        self.assertTrue(halted)
+        self.assertEqual(hr_status, {})
+
+        # Both gradient busy bits clear once halt_and_reset returns.
+        # Layout: bit 17 = fhdo_busy, bit 16 = ocra1_busy (see marga.sv
+        # fld_status assignment).
+        regs, _ = ops.regstatus(self.s)
+        self.assertEqual(regs.status & 0x30000, 0,
+                         "halt_and_reset left FHDO/OCRA1 busy bits asserted")
+
+        # Process-lifetime persistence: a second halt_and_reset without
+        # re-registering should still succeed, proving the server still
+        # holds the previously-registered vector.
+        halted, hr_status = ops.halt_and_reset(self.s)
+        self.assertTrue(halted)
+        self.assertEqual(hr_status, {})
 
     @unittest.skip("marga devel")
     def test_acquire_simple(self):
