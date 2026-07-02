@@ -428,6 +428,11 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(halted)
         self.assertEqual(hr_status, {})
 
+        # Drain the sticky status latch so subsequent tests (e.g. test_idle)
+        # don't see a stale fhdo_err from SPI echo mismatches when no
+        # physical gradient board is attached.
+        ops.regstatus(self.s)
+
     @unittest.skip("marga devel")
     def test_acquire_simple(self):
         # For comprehensive tests, see test_loopback.py
